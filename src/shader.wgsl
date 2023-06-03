@@ -31,6 +31,14 @@ fn vs_main(
 fn fs_main(
   in: VertexOutput,
 ) -> @location(0) vec4<f32> {
-  var uv = in.pos.xy / uniform.screen_resolution;
-  return vec4<f32>(uv.x, uv.y, 0.0, 1.0);
+  let res = uniform.screen_resolution;
+  var pos = in.pos.xy;
+
+  pos = (pos * 2.0 - res) / res.y;
+
+  var d = length(pos);
+  d -= 0.5;
+  d = abs(d);
+
+  return vec4<f32>(d, d, d, 1.0);
 }
