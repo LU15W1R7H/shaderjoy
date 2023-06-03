@@ -60,7 +60,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
       entry_point: "fs_main",
       targets: &[Some(swapchain_format.into())],
     }),
-    primitive: wgpu::PrimitiveState::default(),
+    primitive: wgpu::PrimitiveState {
+      topology: wgpu::PrimitiveTopology::TriangleStrip,
+      //strip_index_format: todo!(),
+      ..Default::default()
+    },
     depth_stencil: None,
     multisample: wgpu::MultisampleState::default(),
     multiview: None,
@@ -117,7 +121,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             depth_stencil_attachment: None,
           });
           rpass.set_pipeline(&render_pipeline);
-          rpass.draw(0..3, 0..1);
+          rpass.draw(0..4, 0..1);
         }
 
         queue.submit(Some(encoder.finish()));
