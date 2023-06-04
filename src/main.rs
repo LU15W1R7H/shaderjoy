@@ -1,6 +1,7 @@
 use std::{
   fs,
   sync::{Arc, Mutex, OnceLock},
+  time::{Duration, Instant},
 };
 
 use notify::Watcher;
@@ -17,6 +18,8 @@ static SHADER_SRC_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniform {
   screen_resolution: [f32; 2],
+  time: f32,
+  _pad0: f32,
 }
 
 async fn run(event_loop: EventLoop<()>, window: Window) {
@@ -32,7 +35,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
   let adapter = instance
     .request_adapter(&wgpu::RequestAdapterOptions {
-      power_preference: wgpu::PowerPreference::default(),
+      power_preference: wgpu::PowerPreference::LowPower,
+      //power_preference: wgpu::PowerPreference::HighPerformance,
       force_fallback_adapter: false,
       compatible_surface: Some(&surface),
     })
@@ -66,13 +70,23 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
   let mut uniform = Uniform {
     screen_resolution: [size.width as f32, size.height as f32],
+    time: 0.0,
+    _pad0: 0.0,
   };
 
-  let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-    label: Some("uniform-buffer"),
-    contents: bytemuck::cast_slice(&[uniform]),
-    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-  });
+  let mut current_buffer = 0;
+  let uniform_buffers = [
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("uniform-buffer"),
+      contents: bytemuck::cast_slice(&[uniform]),
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    }),
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+      label: Some("uniform-buffer"),
+      contents: bytemuck::cast_slice(&[uniform]),
+      usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    }),
+  ];
 
   let uniform_bind_group_layout =
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -89,17 +103,26 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
       }],
     });
 
-  let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-    label: Some("uniform-bind-group"),
-    layout: &uniform_bind_group_layout,
-    entries: &[wgpu::BindGroupEntry {
-      binding: 0,
-      resource: uniform_buffer.as_entire_binding(),
-    }],
-  });
+  let uniform_bind_groups = [
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("uniform-bind-group"),
+      layout: &uniform_bind_group_layout,
+      entries: &[wgpu::BindGroupEntry {
+        binding: 0,
+        resource: uniform_buffers[0].as_entire_binding(),
+      }],
+    }),
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+      label: Some("uniform-bind-group"),
+      layout: &uniform_bind_group_layout,
+      entries: &[wgpu::BindGroupEntry {
+        binding: 0,
+        resource: uniform_buffers[1].as_entire_binding(),
+      }],
+    }),
+  ];
 
   let device = Arc::new(device);
-
   let device_clone = Arc::clone(&device);
 
   let recreate_pipeline = move || -> wgpu::RenderPipeline {
@@ -161,22 +184,37 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     )
     .unwrap();
 
+  let mut last_instant = Instant::now();
+
   event_loop.run(move |event, _, control_flow| {
     *control_flow = ControlFlow::Wait;
     match event {
+      Event::MainEventsCleared => {
+        let new_instant = Instant::now();
+        let tick = (new_instant - last_instant).as_secs_f32();
+        uniform.time += tick;
+        last_instant = new_instant;
+
+        queue.write_buffer(
+          &uniform_buffers[current_buffer],
+          0,
+          bytemuck::cast_slice(&[uniform]),
+        );
+        current_buffer = (current_buffer + 1) % 2;
+
+        std::thread::sleep(Duration::from_millis(30));
+
+        window.request_redraw();
+      }
       Event::WindowEvent {
         event: WindowEvent::Resized(size),
         ..
       } => {
-        // Reconfigure the surface with the new size
         config.width = size.width;
         config.height = size.height;
+        uniform.screen_resolution = [size.width as f32, size.height as f32];
         surface.configure(&device, &config);
 
-        uniform.screen_resolution = [size.width as f32, size.height as f32];
-        queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniform]));
-
-        // On macos the window needs to be redrawn manually after resizing
         window.request_redraw();
       }
       Event::RedrawRequested(_) => {
@@ -206,7 +244,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         });
 
         rpass.set_pipeline(&render_pipeline);
-        rpass.set_bind_group(0, &uniform_bind_group, &[]);
+        rpass.set_bind_group(0, &uniform_bind_groups[current_buffer], &[]);
         rpass.draw(0..4, 0..1);
 
         drop(rpass);
