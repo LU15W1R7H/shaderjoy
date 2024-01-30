@@ -19,33 +19,30 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        libPath = with pkgs; lib.makeLibraryPath [
-          libxkbcommon
-
-          wayland
-
-          vulkan-loader
-          vulkan-validation-layers
-        ];
-
       in
       with pkgs;
       {
         formatter = nixpkgs-fmt;
 
-        devShell = mkShell {
+        devShell = mkShell rec {
           buildInputs = [
-            pkgconfig
+            pkg-config
             rust-toolchain
             rust-analyzer
             bacon
             cargo-edit
 
+            udev 
+            libxkbcommon
+            vulkan-loader
+            vulkan-validation-layers
+
+            wayland
+
+
             xorg.libxcb
           ];
-
-          LD_LIBRARY_PATH = libPath;
-          VK_LAYER_PATH = "${pkgs.vulkan-validation-layers}/share/vulkan/explicit_layer.d";
+          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath(buildInputs);
         };
       }
     );

@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 use winit::{
   event::{Event, WindowEvent},
   event_loop::{ControlFlow, EventLoop},
-  window::Window,
+  window::WindowBuilder,
 };
 
 static SHADER_SRC_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
@@ -22,7 +22,15 @@ struct Uniform {
   _pad0: f32,
 }
 
-async fn run(event_loop: EventLoop<()>, window: Window) {
+#[pollster::main]
+async fn main() {
+  env_logger::init();
+
+  let event_loop = EventLoop::new().unwrap();
+  event_loop.set_control_flow(ControlFlow::Poll);
+
+  let window = WindowBuilder::new().build(&event_loop).unwrap();
+
   SHADER_SRC_PATH
     .set(std::path::PathBuf::from("./src/shader.wgsl"))
     .unwrap();
@@ -31,7 +39,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
   let instance = wgpu::Instance::default();
 
-  let surface = unsafe { instance.create_surface(&window) }.unwrap();
+  let surface = instance.create_surface(&window).unwrap();
 
   let adapter = instance
     .request_adapter(&wgpu::RequestAdapterOptions {
@@ -47,8 +55,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     .request_device(
       &wgpu::DeviceDescriptor {
         label: None,
-        features: wgpu::Features::empty(),
-        limits: wgpu::Limits::default().using_resolution(adapter.limits()),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default().using_resolution(adapter.limits()),
       },
       None,
     )
@@ -65,6 +73,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     present_mode: wgpu::PresentMode::Fifo,
     alpha_mode: swapchain_capabilities.alpha_modes[0],
     view_formats: vec![],
+    desired_maximum_frame_latency: 1,
   };
   surface.configure(&device, &config);
 
@@ -125,7 +134,7 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
   let device = Arc::new(device);
   let device_clone = Arc::clone(&device);
 
-  let recreate_pipeline = move || -> wgpu::RenderPipeline {
+  let create_pipeline = move || -> wgpu::RenderPipeline {
     let pipeline_layout = device_clone.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
       label: None,
       bind_group_layouts: &[&uniform_bind_group_layout],
@@ -163,17 +172,13 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
     })
   };
 
-  let render_pipeline = recreate_pipeline();
+  let render_pipeline = create_pipeline();
   let render_pipeline = Arc::new(Mutex::new(render_pipeline));
-
-  let window = Arc::new(window);
-  let window_clone = Arc::clone(&window);
 
   let render_pipeline_clone = Arc::clone(&render_pipeline);
   let mut watcher = notify::recommended_watcher(move |_res| {
     let mut render_pipeline = render_pipeline_clone.lock().unwrap();
-    *render_pipeline = recreate_pipeline();
-    window_clone.request_redraw();
+    *render_pipeline = create_pipeline();
   })
   .unwrap();
 
@@ -186,10 +191,10 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
 
   let mut last_instant = Instant::now();
 
-  event_loop.run(move |event, _, control_flow| {
-    *control_flow = ControlFlow::Wait;
-    match event {
-      Event::MainEventsCleared => {
+  let window = &window;
+  event_loop
+    .run(move |event, elwt| match event {
+      Event::AboutToWait => {
         let new_instant = Instant::now();
         let tick = (new_instant - last_instant).as_secs_f32();
         uniform.time += tick;
@@ -202,9 +207,9 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         );
         current_buffer = (current_buffer + 1) % 2;
 
-        std::thread::sleep(Duration::from_millis(30));
-
         window.request_redraw();
+
+        std::thread::sleep(Duration::from_millis(30));
       }
       Event::WindowEvent {
         event: WindowEvent::Resized(size),
@@ -214,10 +219,11 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
         config.height = size.height;
         uniform.screen_resolution = [size.width as f32, size.height as f32];
         surface.configure(&device, &config);
-
-        window.request_redraw();
       }
-      Event::RedrawRequested(_) => {
+      Event::WindowEvent {
+        event: WindowEvent::RedrawRequested,
+        ..
+      } => {
         let frame = surface
           .get_current_texture()
           .expect("Failed to acquire next swap chain texture");
@@ -237,10 +243,12 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
             resolve_target: None,
             ops: wgpu::Operations {
               load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-              store: true,
+              store: wgpu::StoreOp::Store,
             },
           })],
           depth_stencil_attachment: None,
+          timestamp_writes: None,
+          occlusion_query_set: None,
         });
 
         rpass.set_pipeline(&render_pipeline);
@@ -254,15 +262,8 @@ async fn run(event_loop: EventLoop<()>, window: Window) {
       Event::WindowEvent {
         event: WindowEvent::CloseRequested,
         ..
-      } => *control_flow = ControlFlow::Exit,
+      } => elwt.exit(),
       _ => {}
-    }
-  });
-}
-
-fn main() {
-  let event_loop = EventLoop::new();
-  let window = winit::window::Window::new(&event_loop).unwrap();
-  env_logger::init();
-  pollster::block_on(run(event_loop, window));
+    })
+    .unwrap();
 }
